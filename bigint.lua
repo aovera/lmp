@@ -6,9 +6,8 @@ local mt = {} -- metatable
 -- The maximum safe integer limit is 2^53 - 1 (approx. 9 x 10^15).
 -- To prevent precision loss during chunk multiplication (chunk * chunk),
 -- the chunk size 'n' must be 7 (since 10^7 * 10^7 = 10^14 < 2^53).
--- It has been leaved as 9 to use full capability of lua5.4+, but feel free to modify it
-local n = 9
-local BASE = math.floor(10 ^ n) -- 10^9
+local n = 7
+local BASE = math.floor(10 ^ n) -- 10^7
 local FMT_STR = "%0" .. n .. "d"
 
 
