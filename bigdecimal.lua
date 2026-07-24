@@ -1,4 +1,4 @@
-local bigint = require("lmp.bigint")
+local bigint = require("./bigint")
 local bigdecimal = {}
 local mt = {} --metatable
 
@@ -109,32 +109,63 @@ end
 
 mt.__mul = function(a, b) return bigdecimal.mult(a, b) end
 
-
 function bigdecimal.div(a, b, precision)
-	if #b.bint == 1 and b.bint[1] == 0 then
-		error("Division by zero!")
-	end
+    if #b.bint.digits == 1 and b.bint.digits[1] == 0 then
+        error("Division by zero!")
+    end
 
-	-- Default 20 digits
-	precision = precision or 20
+    -- Default 20 digits
+    precision = precision or 20
 
-	local max_scale = math.max(a.scale, b.scale) + precision
+    -- Shifting
+    local diff = precision + b.scale - a.scale
+    local result_bint
 
-	local mul = bigint.new("1" .. string.rep("0", max_scale))
-    local a_extended = a.bint * mul
+    if diff >= 0 then
+        local mul = bigint.new("1" .. string.rep("0", diff))
+        local a_extended = a.bint * mul
+        result_bint = a_extended / b.bint
+    else
+        local mul = bigint.new("1" .. string.rep("0", -diff))
+        local b_extended = b.bint * mul
+        result_bint = a.bint / b_extended
+    end
 
-	local result_bint = a_extended / b.bint
+    local result = {
+        bint = result_bint,
+        scale = precision
+    }
 
-	local end_scale = max_scale + a.scale - b.scale
-	local result = {
-		bint = result_bint,
-		scale = end_scale
-	}
-
-	setmetatable(result, mt)
-	return result
+    setmetatable(result, mt)
+    return result
 end
 
+
 mt.__div = function(a, b) return bigdecimal.div(a, b) end
+
+function bigdecimal.compare(a, b)
+	local max_scale = math.max(a.scale, b.scale)
+
+	local new_a = adjust_scale(a.bint, a.scale, max_scale)
+	local new_b = adjust_scale(b.bint, b.scale, max_scale)
+
+	return bigint.compare(new_a, new_b)
+end
+
+-- a == b
+mt.__eq = function(a, b)
+    return bigdecimal.compare(a, b) == 0
+end
+
+-- a < b
+mt.__lt = function(a, b)
+    return bigdecimal.compare(a, b) == -1
+end
+
+-- a <= b
+mt.__le = function(a, b)
+    local cmp = bigdecimal.compare(a, b)
+    return cmp == -1 or cmp == 0
+end
 
 return bigdecimal

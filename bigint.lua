@@ -9,6 +9,7 @@ local mt = {} -- metatable
 local n = 7
 local BASE = math.floor(10 ^ n) -- 10^7
 local FMT_STR = "%0" .. n .. "d"
+local KARATSUBA_THRESHOLD = 150 -- 150 * 7 = 1050 digits
 
 
 local function trim(obj)
@@ -195,8 +196,10 @@ function bigint.sub(a, b)
 
 end
 
+-- Old bigint.mult() before karatsuba implementation
+--[[
 function bigint.mult(a, b)
-	local result = { digits = {} }
+	local result = { digits = {}, sign = 1}
 	local max_digit = #a.digits + #b.digits
 	for i = 1, max_digit do
 		result.digits[i] = 0
@@ -218,15 +221,189 @@ function bigint.mult(a, b)
 		end
 	end
 
-	while #result.digits > 1 and result.digits[#result.digits] == 0 do
-		table.remove(result.digits)
-	end
-
 	result.sign = a.sign * b.sign
+	result = trim(result)
 
 	setmetatable(result, mt)
 	return result
 end
+]]--
+
+
+local function base_mult(a, b)
+    if #a == 0 or #b == 0 then return {} end
+    if (#a == 1 and a[1] == 0) or (#b == 1 and b[1] == 0) then return {0} end
+    
+    local res = {}
+    for i = 1, #a + #b do res[i] = 0 end
+    
+    for i = 1, #a do
+        local carry = 0
+        for j = 1, #b do
+            local target = i + j - 1
+            local mult = (a[i] * b[j]) + res[target] + carry
+            carry = math.floor(mult / BASE)
+            res[target] = mult % BASE
+        end
+        if carry > 0 then
+            res[i + #b] = res[i + #b] + carry
+        end
+    end
+    while #res > 1 and res[#res] == 0 do table.remove(res) end
+    return res
+end
+
+--Karatsuba helper
+local function add_arrays(a, b)
+	local result = {}
+	local carry = 0
+	local max_len = math.max(#a, #b)
+	
+	for i = 1, max_len do
+		local sum = (a[i] or 0) + (b[i] or 0) + carry
+		if sum >= BASE then
+			sum = sum - BASE
+			carry = 1
+		else
+			carry = 0
+		end
+		result[i] = sum
+	end
+
+	if carry > 0 then
+		result[max_len + 1] = carry
+	end
+
+	return result
+end
+
+--Karatsuba helper
+local function sub_arrays(a, b)
+	local result = {}
+	local borrow = 0
+
+	local max_len = math.max(#a, #b)
+	for i = 1, max_len do
+		local diff = (a[i] or 0) - (b[i] or 0) - borrow
+		if diff < 0 then
+			diff = diff + BASE
+			borrow = 1
+		else
+			borrow = 0
+		end
+		result[i] = diff
+	end
+
+	while #result > 1 and result[#result] == 0 do table.remove(result) end
+	return result
+end
+
+--Karatsuba helper
+local function split_arrays(a, m)
+	local low, high = {}, {}
+	
+	for i = 1, m do
+		low[i] = a[i] or 0
+	end
+	while #low > 1 and low[#low] == 0 do
+		table.remove(low)
+	end
+	if #low == 0 then
+		low = {0}
+	end
+
+	for i = m + 1, #a do
+		high[i - m] = a[i]
+	end
+	if #high == 0 then
+		high = {0}
+	end
+
+	return low, high
+end
+
+--Karatsuba recursion core
+local function karatsuba_core(a, b)
+	local len_a = #a
+	local len_b = #b
+
+	if len_a <= KARATSUBA_THRESHOLD or len_b <= KARATSUBA_THRESHOLD then
+        return base_mult(a, b)
+    end
+
+	local m = math.floor((math.max(len_a, len_b) + 1) / 2)
+	
+	local a0, a1 = split_arrays(a, m)
+	local b0, b1 = split_arrays(b, m)
+
+	local z0 = karatsuba_core(a0, b0)
+	local z2 = karatsuba_core(a1, b1)
+
+	local a0_plus_a1 = add_arrays(a0, a1)
+	local b0_plus_b1 = add_arrays(b0, b1)
+
+	local z1_temp = karatsuba_core(a0_plus_a1, b0_plus_b1)
+	local z1 = sub_arrays(sub_arrays(z1_temp, z0), z2)
+
+	-- z2 * BASE^(2m) + z1 * BASE^m + z0
+	local result = {}
+	local max_idx = 0 --manual control
+
+	for i = 1, #z0 do
+		result[i] = z0[i]
+		if i > max_idx then max_idx = i end
+	end
+
+	for i = 1, #z1 do
+		local target = i + m
+		result[target] = (result[target] or 0) + z1[i]
+		if target > max_idx then max_idx = target end
+	end
+
+	for i = 1, #z2 do
+		local target = i + 2 * m
+		result[target] = (result[target] or 0) + z2[i]
+		if target > max_idx then max_idx = target end
+	end
+
+	-- Carry normalization
+	local carry = 0
+	for i = 1, max_idx do
+		local sum = (result[i] or 0) + carry
+		if sum >= BASE then
+			carry = math.floor(sum / BASE)
+			result[i] = sum % BASE
+		else
+			carry = 0
+			result[i] = sum
+		end
+	end
+
+	while carry > 0 do
+		max_idx = max_idx + 1
+		result[max_idx] = carry % BASE
+		carry = math.floor(carry / BASE)
+	end
+
+	while #result > 1 and result[#result] == 0 do table.remove(result) end
+	return result
+end
+
+
+function bigint.mult(a, b)
+	
+	local result_digits = karatsuba_core(a.digits, b.digits)
+	local result = {
+		digits = result_digits,
+		sign = a.sign * b.sign
+	}
+
+	result = trim(result)
+
+	setmetatable(result, mt)
+	return result
+end
+
 
 function bigint.divmod(a, b)
     if #b.digits == 1 and b.digits[1] == 0 then
@@ -298,6 +475,29 @@ function bigint.divmod(a, b)
     return quotient, remainder
 end
 
+function bigint.power(a, b)
+	local result = bigint.new("1")
+	if #b.digits == 1 and b.digits[1] == 0 then
+		setmetatable(result, mt)
+		return result-- n ^ 0 = 1
+	end
+
+	if bigint.compare(b, bigint.new("0")) == -1 then
+		error("Illegal operation! Power < 0!")
+	end
+
+
+	local i = bigint.new("0")
+	local one = bigint.new("1")
+	while bigint.compare(i, b) ~= 0 do--while b >= 1
+		result = bigint.mult(result, a)
+		i = bigint.add(i, one)
+	end
+
+	setmetatable(result, mt)
+	return result
+end
+
 
 -- Type converter
 local function to_bigint(val)
@@ -360,6 +560,11 @@ end
 -- a == b
 mt.__eq = function(a, b)
     return bigint.compare(to_bigint(a), to_bigint(b)) == 0
+end
+
+mt.__pow = function(a, b)
+	local p = bigint.power(to_bigint(a), to_bigint(b))
+	return p
 end
 
 
